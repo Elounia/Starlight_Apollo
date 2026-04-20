@@ -51,6 +51,9 @@ namespace nvenc {
 
     // Intra refresh for clients that doesn't request keyframe correctly
     bool intra_refresh = false;
+
+    // Lookahead depth for rate control (0 = disabled, default for low latency)
+    int lookahead_depth = 0;
   };
 
 }  // namespace nvenc

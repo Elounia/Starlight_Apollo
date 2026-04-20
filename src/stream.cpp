@@ -376,6 +376,9 @@ namespace stream {
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
 
       std::unique_ptr<platf::deinit_t> qos;
+
+      // Adaptive FEC: dynamically adjusted based on client-reported packet loss
+      std::atomic<int> adaptive_fec_percentage {-1};  // -1 = use static config value
     } video;
 
     struct {
@@ -954,6 +957,24 @@ namespace stream {
         << "time in milli since last report [" << t.count() << ']' << std::endl
         << "last good frame [" << lastGoodFrame << ']' << std::endl
         << "---end stats---";
+
+      // Adaptive FEC: adjust FEC percentage based on reported packet loss
+      auto base_fec = config::stream.fec_percentage;
+      int new_fec;
+      if (count == 0) {
+        // No loss: decay toward a low floor (25% of configured value, minimum 5%)
+        auto current = session->video.adaptive_fec_percentage.load(std::memory_order_relaxed);
+        if (current < 0) current = base_fec;
+        int floor_fec = std::max(5, base_fec / 4);
+        new_fec = std::max(floor_fec, current - 2);
+      } else {
+        // Loss detected: increase FEC proportionally, capped at 50%
+        auto current = session->video.adaptive_fec_percentage.load(std::memory_order_relaxed);
+        if (current < 0) current = base_fec;
+        new_fec = std::min(50, current + std::max(5, count));
+      }
+      session->video.adaptive_fec_percentage.store(new_fec, std::memory_order_relaxed);
+      BOOST_LOG(debug) << "Adaptive FEC adjusted to "sv << new_fec << '%';
     });
 
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
@@ -1330,7 +1351,7 @@ namespace stream {
     auto video_epoch = std::chrono::steady_clock::now();
 
     // Video traffic is sent on this thread
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     logging::min_max_avg_periodic_logger<double> frame_processing_latency_logger(debug, "Frame processing latency", "ms");
 
@@ -1398,7 +1419,8 @@ namespace stream {
         frame_header.frame_processing_latency = 0;
       }
 
-      auto fecPercentage = config::stream.fec_percentage;
+      auto fecPercentage = session->video.adaptive_fec_percentage.load(std::memory_order_relaxed);
+      if (fecPercentage < 0) fecPercentage = config::stream.fec_percentage;
 
       // Insert space for packet headers
       auto blocksize = session->config.packetsize + MAX_RTP_HEADER_SIZE;

@@ -1212,6 +1212,9 @@ namespace config {
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
     int_between_f(vars, "encoder_lookahead", video.encoder_lookahead, {0, 32});
 
+    // Wire encoder_lookahead into NVENC native path
+    video.nv.lookahead_depth = video.encoder_lookahead;
+
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);
     string_f(vars, "sunshine_name", nvhttp.sunshine_name);

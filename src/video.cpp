@@ -1978,6 +1978,9 @@ namespace video {
     // Threshold: average per-pixel difference that indicates a scene cut
     constexpr int scene_change_threshold = 40;
 
+    // Static frame suppression: skip re-encoding identical frames
+    bool last_frame_was_static = false;
+
     {
       // Load a dummy image into the AVFrame to ensure we have something to encode
       // even if we timeout waiting on the first frame. This is a relatively large
@@ -2090,6 +2093,10 @@ namespace video {
                 BOOST_LOG(debug) << "Scene change detected (avg_diff=" << avg_diff << "), forcing IDR"sv;
                 session->request_idr_frame();
               }
+              // Static frame suppression: if sampled pixels haven't changed, skip re-encoding
+              last_frame_was_static = (total_diff < 3);
+            } else {
+              last_frame_was_static = false;
             }
 
             prev_frame_samples = cur_samples;
@@ -2106,6 +2113,11 @@ namespace video {
         } else if (!images->running()) {
           break;
         }
+      }
+
+      // Static frame suppression: skip encoding if the frame is identical to the previous one
+      if (last_frame_was_static) {
+        continue;
       }
 
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp)) {

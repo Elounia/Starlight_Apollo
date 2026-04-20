@@ -238,8 +238,13 @@ namespace nvenc {
     enc_config.frameIntervalP = 1;
     enc_config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     enc_config.rcParams.zeroReorderDelay = 1;
-    enc_config.rcParams.enableLookahead = 0;
-    enc_config.rcParams.lookaheadDepth = 0;
+    if (config.lookahead_depth > 0 && get_encoder_cap(NV_ENC_CAPS_SUPPORT_LOOKAHEAD)) {
+      enc_config.rcParams.enableLookahead = 1;
+      enc_config.rcParams.lookaheadDepth = config.lookahead_depth;
+    } else {
+      enc_config.rcParams.enableLookahead = 0;
+      enc_config.rcParams.lookaheadDepth = 0;
+    }
     enc_config.rcParams.lowDelayKeyFrameScale = 1;
     enc_config.rcParams.multiPass = config.two_pass == nvenc_two_pass::quarter_resolution ? NV_ENC_TWO_PASS_QUARTER_RESOLUTION :
                                     config.two_pass == nvenc_two_pass::full_resolution    ? NV_ENC_TWO_PASS_FULL_RESOLUTION :
