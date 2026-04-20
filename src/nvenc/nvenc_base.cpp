@@ -239,6 +239,7 @@ namespace nvenc {
     enc_config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     enc_config.rcParams.zeroReorderDelay = 1;
     enc_config.rcParams.enableLookahead = 0;
+    enc_config.rcParams.lookaheadDepth = 0;
     enc_config.rcParams.lowDelayKeyFrameScale = 1;
     enc_config.rcParams.multiPass = config.two_pass == nvenc_two_pass::quarter_resolution ? NV_ENC_TWO_PASS_QUARTER_RESOLUTION :
                                     config.two_pass == nvenc_two_pass::full_resolution    ? NV_ENC_TWO_PASS_FULL_RESOLUTION :
@@ -248,7 +249,7 @@ namespace nvenc {
     enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
 
     if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
-      enc_config.rcParams.vbvBufferSize = client_config.bitrate * 1000 / client_config.framerate;
+      enc_config.rcParams.vbvBufferSize = client_config.bitrate * 1000 / 10;
       if (config.vbv_percentage_increase > 0) {
         enc_config.rcParams.vbvBufferSize += enc_config.rcParams.vbvBufferSize * config.vbv_percentage_increase / 100;
       }

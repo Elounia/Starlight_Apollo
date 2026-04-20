@@ -3,8 +3,10 @@
  * @brief Definitions for video.
  */
 // standard includes
+#include <array>
 #include <atomic>
 #include <bitset>
+#include <cstdlib>
 #include <list>
 #include <thread>
 
@@ -343,6 +345,7 @@ namespace video {
       replacements = std::move(other.replacements);
       sps = std::move(other.sps);
       vps = std::move(other.vps);
+      current_packet = std::move(other.current_packet);
 
       inject = other.inject;
 
@@ -384,6 +387,9 @@ namespace video {
 
     cbs::nal_t sps;
     cbs::nal_t vps;
+
+    // Reusable packet to avoid alloc/free on EAGAIN iterations
+    std::unique_ptr<packet_raw_avcodec> current_packet;
 
     // inject sps/vps data into idr pictures
     int inject;
@@ -1430,8 +1436,10 @@ namespace video {
     }
 
     while (ret >= 0) {
-      auto packet = std::make_unique<packet_raw_avcodec>();
-      auto av_packet = packet.get()->av_packet;
+      if (!session.current_packet) {
+        session.current_packet = std::make_unique<packet_raw_avcodec>();
+      }
+      auto av_packet = session.current_packet->av_packet;
 
       ret = avcodec_receive_packet(ctx.get(), av_packet);
       if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
@@ -1439,6 +1447,8 @@ namespace video {
       } else if (ret < 0) {
         return ret;
       }
+
+      auto packet = std::move(session.current_packet);
 
       if (av_packet->flags & AV_PKT_FLAG_KEY) {
         BOOST_LOG(debug) << "Frame "sv << frame_nr << ": IDR Keyframe (AV_FRAME_FLAG_KEY)"sv;
@@ -1605,6 +1615,12 @@ namespace video {
                         std::numeric_limits<int>::max();
 
       ctx->keyint_min = std::numeric_limits<int>::max();
+
+      // Expose lookahead depth for improved rate control (0 = disabled for low latency)
+      if (config::video.encoder_lookahead > 0) {
+        ctx->rc_initial_buffer_occupancy = 0;
+        av_opt_set_int(ctx.get(), "rc_lookahead", config::video.encoder_lookahead, 0);
+      }
 
       // Some client decoders have limits on the number of reference frames
       if (config.numRefFrames) {
@@ -1776,7 +1792,7 @@ namespace video {
           // buffer by 1.5x for software HEVC encoding.
           ctx->rc_buffer_size = bitrate / ((config.framerate * 10) / 15);
         } else {
-          ctx->rc_buffer_size = bitrate / config.framerate;
+          ctx->rc_buffer_size = bitrate / 10;
 
 #ifndef __APPLE__
           if (encoder.name == "nvenc" && config::video.nv_legacy.vbv_percentage_increase > 0) {
@@ -1954,6 +1970,14 @@ namespace video {
     auto idr_events = mail->event<bool>(mail::idr);
     auto invalidate_ref_frames_events = mail->event<std::pair<int64_t, int64_t>>(mail::invalidate_ref_frames);
 
+    // Scene-change detection state: store a small fingerprint of previous frame
+    constexpr int scene_sample_grid = 8;  // 8x8 grid of sample points
+    constexpr int scene_sample_count = scene_sample_grid * scene_sample_grid;
+    std::array<uint8_t, scene_sample_count> prev_frame_samples {};
+    bool have_prev_samples = false;
+    // Threshold: average per-pixel difference that indicates a scene cut
+    constexpr int scene_change_threshold = 40;
+
     {
       // Load a dummy image into the AVFrame to ensure we have something to encode
       // even if we timeout waiting on the first frame. This is a relatively large
@@ -2040,6 +2064,36 @@ namespace video {
           if (session->convert(*img)) {
             BOOST_LOG(error) << "Could not convert image"sv;
             break;
+          }
+
+          // Scene-change detection: sample pixels from captured frame
+          if (img->data && img->row_pitch > 0 && img->height > 0 && img->width > 0) {
+            std::array<uint8_t, scene_sample_count> cur_samples {};
+            int idx = 0;
+            for (int gy = 0; gy < scene_sample_grid; gy++) {
+              int y = (img->height * (2 * gy + 1)) / (2 * scene_sample_grid);
+              for (int gx = 0; gx < scene_sample_grid; gx++) {
+                int x = (img->width * (2 * gx + 1)) / (2 * scene_sample_grid);
+                // BGR0 format: 4 bytes per pixel, take green channel as luminance proxy
+                auto pixel_offset = y * img->row_pitch + x * 4 + 1;
+                cur_samples[idx++] = *(reinterpret_cast<uint8_t *>(img->data) + pixel_offset);
+              }
+            }
+
+            if (have_prev_samples && !requested_idr_frame) {
+              int total_diff = 0;
+              for (int i = 0; i < scene_sample_count; i++) {
+                total_diff += std::abs((int) cur_samples[i] - (int) prev_frame_samples[i]);
+              }
+              int avg_diff = total_diff / scene_sample_count;
+              if (avg_diff > scene_change_threshold) {
+                BOOST_LOG(debug) << "Scene change detected (avg_diff=" << avg_diff << "), forcing IDR"sv;
+                session->request_idr_frame();
+              }
+            }
+
+            prev_frame_samples = cur_samples;
+            have_prev_samples = true;
           }
 
           if (time_diff < frame_variation_threshold) {
@@ -2356,7 +2410,7 @@ namespace video {
     });
 
     // Encoding and capture takes place on this thread
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     std::vector<std::string> display_names;
     int display_p = -1;
@@ -2393,7 +2447,7 @@ namespace video {
     auto hdr_event = mail->event<hdr_info_t>(mail::hdr);
 
     // Encoding takes place on this thread
-    platf::adjust_thread_priority(platf::thread_priority_e::high);
+    platf::adjust_thread_priority(platf::thread_priority_e::critical);
 
     while (!shutdown_event->peek() && images->running()) {
       // Wait for the main capture event when the display is being reinitialized

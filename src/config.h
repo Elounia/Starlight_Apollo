@@ -149,6 +149,8 @@ namespace config {
     std::string fallback_mode;
     bool isolated_virtual_display_option;
     bool ignore_encoder_probe_failure;
+
+    int encoder_lookahead;  // Lookahead depth for rate control (0 = disabled, default for low latency)
   };
 
   struct audio_t {

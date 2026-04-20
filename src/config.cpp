@@ -516,6 +516,7 @@ namespace config {
     "1920x1080x60",  // fallback_mode
     false, // isolated Display
     false, // ignore_encoder_probe_failure
+    0, // encoder_lookahead
   };
 
   audio_t audio {
@@ -1209,6 +1210,7 @@ namespace config {
     string_f(vars, "fallback_mode", video.fallback_mode);
     bool_f(vars, "isolated_virtual_display_option", video.isolated_virtual_display_option);
     bool_f(vars, "ignore_encoder_probe_failure", video.ignore_encoder_probe_failure);
+    int_between_f(vars, "encoder_lookahead", video.encoder_lookahead, {0, 32});
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

@@ -1572,7 +1572,7 @@ namespace input {
   }
 
   /**
-   * @brief Called on the control stream thread to queue an input message.
+   * @brief Called on the control stream thread to process an input message inline.
    * @param input The input context pointer.
    * @param input_data The input message.
    */
@@ -1636,11 +1636,78 @@ namespace input {
       }
     }
 
+    // Inline batching: batch any queued messages of the same type, then dispatch immediately
+    PNV_INPUT_HEADER payload = (PNV_INPUT_HEADER)input_data.data();
+
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
-      input->input_queue.push_back(std::move(input_data));
+
+      // Batch with any pending items in the queue
+      auto i = input->input_queue.begin();
+      while (i != input->input_queue.end()) {
+        auto batchable_payload = (PNV_INPUT_HEADER) i->data();
+
+        auto batch_result = batch(payload, batchable_payload);
+        if (batch_result == batch_result_e::terminate_batch) {
+          break;
+        } else if (batch_result == batch_result_e::batched) {
+          i = input->input_queue.erase(i);
+        } else {
+          i++;
+        }
+      }
     }
-    task_pool.push(passthrough_next_message, input);
+
+    // Print the final input packet
+    input::print((void *) payload);
+
+    // Dispatch inline on the calling thread — no thread-pool hop
+    switch (util::endian::little(payload->magic)) {
+      case MOUSE_MOVE_REL_MAGIC_GEN5:
+        passthrough(input, (PNV_REL_MOUSE_MOVE_PACKET) payload);
+        break;
+      case MOUSE_MOVE_ABS_MAGIC:
+        passthrough(input, (PNV_ABS_MOUSE_MOVE_PACKET) payload);
+        break;
+      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
+      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
+        passthrough(input, (PNV_MOUSE_BUTTON_PACKET) payload);
+        break;
+      case SCROLL_MAGIC_GEN5:
+        passthrough(input, (PNV_SCROLL_PACKET) payload);
+        break;
+      case SS_HSCROLL_MAGIC:
+        passthrough(input, (PSS_HSCROLL_PACKET) payload);
+        break;
+      case KEY_DOWN_EVENT_MAGIC:
+      case KEY_UP_EVENT_MAGIC:
+        passthrough(input, (PNV_KEYBOARD_PACKET) payload);
+        break;
+      case UTF8_TEXT_EVENT_MAGIC:
+        passthrough((PNV_UNICODE_PACKET) payload);
+        break;
+      case MULTI_CONTROLLER_MAGIC_GEN5:
+        passthrough(input, (PNV_MULTI_CONTROLLER_PACKET) payload);
+        break;
+      case SS_TOUCH_MAGIC:
+        passthrough(input, (PSS_TOUCH_PACKET) payload);
+        break;
+      case SS_PEN_MAGIC:
+        passthrough(input, (PSS_PEN_PACKET) payload);
+        break;
+      case SS_CONTROLLER_ARRIVAL_MAGIC:
+        passthrough(input, (PSS_CONTROLLER_ARRIVAL_PACKET) payload);
+        break;
+      case SS_CONTROLLER_TOUCH_MAGIC:
+        passthrough(input, (PSS_CONTROLLER_TOUCH_PACKET) payload);
+        break;
+      case SS_CONTROLLER_MOTION_MAGIC:
+        passthrough(input, (PSS_CONTROLLER_MOTION_PACKET) payload);
+        break;
+      case SS_CONTROLLER_BATTERY_MAGIC:
+        passthrough(input, (PSS_CONTROLLER_BATTERY_PACKET) payload);
+        break;
+    }
   }
 
   void reset(std::shared_ptr<input_t> &input) {
